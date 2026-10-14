@@ -56,14 +56,14 @@
     },
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/RecordEvolution/widget-doughnut.git"
+        "url": "git+https://github.com/IronFlock/widget-doughnut.git"
     },
     "keywords": [
         "widget",
         "doughnut"
     ],
     "bugs": {
-        "url": "https://github.com/RecordEvolution/widget-doughnut/issues"
+        "url": "https://github.com/IronFlock/widget-doughnut/issues"
     },
-    "homepage": "https://github.com/RecordEvolution/widget-doughnut#readme"
+    "homepage": "https://github.com/IronFlock/widget-doughnut#readme"
 }
