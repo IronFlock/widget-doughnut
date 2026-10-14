@@ -18,7 +18,7 @@ Node `>=24.9.0`, npm `>=10.0.2` required (see `engines`).
 
 ## Architecture
 
-This repo publishes `@record-evolution/widget-doughnut`, a single Lit web component consumed by the IronFlock/RESWARM platform frontend as a dashboard widget.
+This repo publishes `@ironflock/widget-doughnut`, a single Lit web component consumed by the IronFlock/RESWARM platform frontend as a dashboard widget.
 
 ### Entry point and integration
 

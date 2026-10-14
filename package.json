@@ -1,5 +1,5 @@
 {
-    "name": "@record-evolution/widget-doughnut",
+    "name": "@ironflock/widget-doughnut",
     "description": "REWidget widget-doughnut",
     "license": "MIT",
     "author": "widget-doughnut",
@@ -22,8 +22,8 @@
         "start": "vite build --watch & vite",
         "build": "vite build",
         "watch": "vite build --watch",
-        "link": "npm run build && npm link && cd ../RESWARM/frontend && npm link @record-evolution/widget-doughnut",
-        "unlink": "npm unlink --global && cd ../RESWARM/frontend && npm unlink @record-evolution/widget-doughnut && npm i @record-evolution/widget-doughnut",
+        "link": "npm run build && npm link && cd ../RESWARM/frontend && npm link @ironflock/widget-doughnut",
+        "unlink": "npm unlink --global && cd ../RESWARM/frontend && npm unlink @ironflock/widget-doughnut && npm i @ironflock/widget-doughnut",
         "types": "cat src/definition-schema.json | json2ts --style.tabWidth=4 > src/definition-schema.d.ts",
         "preversion": "sh scripts/release-preflight.sh",
         "version": "npm run build",
