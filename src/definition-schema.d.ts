@@ -14,35 +14,35 @@ export type Title = string;
  */
 export type Subtitle = string;
 /**
- * When enabled, multiple doughnut charts are arranged vertically (stacked). When disabled, they are arranged horizontally (side by side).
+ * When enabled, the doughnuts are stacked in one column. When disabled or unset, they are arranged automatically in a grid that uses the tile best.
  */
 export type VerticalLayout = boolean;
 /**
- * The name identifier for this doughnut chart. Displayed in legends and tooltips.
+ * The title shown above this doughnut. When the slices are split by a pivot column, each doughnut is titled '<pivot value> - <label>'. Keep labels unique across entries so viewers can tell the doughnuts apart.
  */
 export type Label = string;
 /**
- * How big in percent should the hole in the middle of the doughnut be? Set to 0% for Pie Chart. Common values: 50% for standard doughnut, 70% for thin ring.
+ * How big in percent of the outer radius should the hole in the middle of the doughnut be? From 0% to 90%: set 0% for a pie chart; larger values are capped at 90% so a ring always remains. Unset, blank or not a number uses 50%. Common values: 50% for standard doughnut, 70% for thin ring. The percentages inside the ring get smaller as the ring gets thinner and are hidden when the hole is larger than 75%.
  */
-export type DoghnutHoleSize = string;
+export type DoughnutHoleSize = string;
 /**
- * Calculate the average over the given number of newest rows. (If pivoted, then per each of the pivot dataseries.) If not specified then the latest value is shown without modification. Useful for smoothing volatile data.
+ * Average each slice over the given number of newest rows instead of drawing only the newest row: each slice becomes the mean of the same slice (matched by position) in those rows. When split by a pivot column, each doughnut averages its own newest rows. Missing, null, blank and non-numeric values are left out of the mean. Unset or below 1 draws the newest row without modification. Useful for smoothing volatile data.
  */
 export type AverageLatestValues = number;
 /**
- * Display name for this doughnut section shown in tooltips and legends. Should be a chosen constant and usually not be assigned dynamically by a table column value.
+ * The text shown next to this slice and in its tooltip (the widget has no legend). Should be a chosen constant and usually not be assigned dynamically by a table column value.
  */
 export type SectionLabel = string;
 /**
- * The numeric value determining the size of this section relative to other sections. Can be bound to a data column for dynamic updates.
+ * The numeric value determining the size of this section relative to other sections. Can be bound to a data column for dynamic updates. A slice of 0 takes no space and gets no label; when all slices are 0 or missing, the doughnut shows an empty grey ring.
  */
 export type Value = number;
 /**
- * You can specify a column in the input data to autogenerate dataseries for each distinct entry in this column. E.g. if you have a table with columns [city, timestamp, temperature] and specify 'city' as split column, then you will get a doughnut for each city.
+ * You can specify a column in the input data to draw a separate doughnut for each distinct value in this column, titled '<value> - <label>'. Bind the SAME column on every slice of the row: each row goes to the doughnut of the first non-empty split value among its slices, and rows without one go to one extra doughnut titled with just the label. The doughnuts are ordered by value, numbers naturally (2 before 10). E.g. with a table [machine, tsp, good_parts, scrap_parts], the slices 'Good' = good_parts and 'Scrap' = scrap_parts, both split by machine, give one Good/Scrap doughnut per machine.
  */
 export type SplitDataBy = string;
 /**
- * One doughnut ring will be drawn for the latest row in the chosen table. Each item in this array defines a section/slice.
+ * The slices of one doughnut, i.e. one row of the chosen table. Each item in this array defines a section/slice. Only the newest row is drawn.
  */
 export type SectionsOfTheDoughnut = {
     name?: SectionLabel;
@@ -52,11 +52,11 @@ export type SectionsOfTheDoughnut = {
     [k: string]: unknown;
 }[];
 /**
- * The table with columns to display as sections in the doughnut. Each section represents a slice of the chart.
+ * The slices of this doughnut, as a list of rows of slices. Only the newest row is drawn (or the newest rows averaged, see Average Latest Values). When bound to a table, EACH ROW of the table is one whole doughnut: map one entry per slice, with each value a column of that row and the name usually a constant. The widget never turns rows into slices, so a table with one row per category cannot be shown as shares here: it would draw one 100% slice.
  */
 export type Data = SectionsOfTheDoughnut[];
 /**
- * Array of doughnut chart configurations. Each entry creates a separate doughnut ring that can display different data or perspectives of the same dataset.
+ * Array of doughnut chart configurations. Each entry draws its own doughnut chart, titled with its label, or one doughnut per distinct value when its slices are split by a pivot column. The doughnuts are separate charts, arranged automatically in a grid that uses the tile best (or stacked in one column with Vertical Layout) in the order of this list; they are never drawn as rings nested inside each other. Use several entries to show different data or perspectives of the same dataset side by side.
  */
 export type Doughnuts = {
     label?: Label;
@@ -66,7 +66,7 @@ export type Doughnuts = {
 }[];
 
 /**
- * A doughnut/pie chart widget for visualizing proportional data as circular segments. Use this widget to display part-to-whole relationships, such as market share percentages, budget allocations, or category distributions. Supports multiple doughnut rings, pivot-based auto-generation of series from data columns, and configurable hole size (set to 0% for pie chart). Best for datasets with 2-8 categories where comparing relative proportions is important.
+ * A doughnut/pie chart widget for visualizing proportional data as circular segments. Use this widget to display part-to-whole relationships, such as market share percentages, budget allocations, or the split of a total into a fixed set of parts (good vs scrap, running vs idle time). The slices are a fixed list set in the configuration, each with its own value, so the parts must be known in advance. Supports several doughnuts in one tile, one per dataseries entry or one per distinct value of a pivot column, drawn as separate charts arranged automatically in a grid that uses the tile best (nested rings are not supported), and a configurable hole size (set to 0% for pie chart). Best for 2-8 slices per doughnut where comparing relative proportions is important.
  */
 export interface DoughnutChartConfiguration {
     title?: Title;
@@ -79,7 +79,7 @@ export interface DoughnutChartConfiguration {
  * Configuration options for the doughnut appearance and data processing.
  */
 export interface Settings {
-    cutout?: DoghnutHoleSize;
+    cutout?: DoughnutHoleSize;
     averageLatest?: AverageLatestValues;
     [k: string]: unknown;
 }

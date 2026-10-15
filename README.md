@@ -1,104 +1,89 @@
-# \<widget-doughnut>
+# @ironflock/widget-doughnut
 
-This webcomponent follows the [open-wc](https://github.com/open-wc/open-wc) recommendation.
+A [Lit](https://lit.dev) web component that draws doughnut and pie charts for IronFlock dashboards. Each `dataseries` entry is one doughnut, or one doughnut per distinct value of a pivot column. The doughnuts are separate charts, arranged automatically in a grid that uses the available space best.
 
 ## Installation
 
 ```bash
-npm i widget-doughnut
+npm i @ironflock/widget-doughnut
 ```
+
+`echarts` (^6) is a peer dependency: the host app provides it.
 
 ## Usage
 
-```html
-<script type="module">
-  import 'widget-doughnut/widget-doughnut.js';
-</script>
+The package version is part of the tag name (`widget-doughnut-<version>`, e.g. `widget-doughnut-1.5.31`), so several versions can be registered on one page. Build the tag from the version of the package you installed, as `demo/index.html` does from `package.json`, and set the data and the theme as properties:
 
-<widget-doughnut></widget-doughnut>
+```js
+import '@ironflock/widget-doughnut'
+import pkg from '@ironflock/widget-doughnut/package.json' with { type: 'json' }
+
+const doughnut = document.createElement(`widget-doughnut-${pkg.version}`)
+doughnut.inputData = { title: 'Parts', dataseries: [ ... ] }
+doughnut.theme = { theme_name: 'light', theme_object: lightTheme }
+document.body.append(doughnut)
 ```
 
-## Expected data format
+## inputData
 
-The following format represents the available data :
-```js
-data: {
-  settings: {
-    title: string,
-    subTitle: string,
-    minDoughnut: number,
-    maxDoughnut: number,
-    style: {
-      needleColor: string,
-      sections: number,
-      backgroundColor: string[]
-    }
-  }
-  doughnutValue: Number
+`src/definition-schema.json` describes every field. The `DoughnutChartConfiguration` type in `src/definition-schema.d.ts` is generated from it.
+
+```ts
+{
+    title?: string
+    subTitle?: string
+    columnLayout?: boolean // true: one column of doughnuts; otherwise an automatic grid
+    dataseries?: {
+        label?: string // the title above this doughnut
+        settings?: {
+            cutout?: string // hole size, '0%' (pie) to '90%'; default '50%'
+            averageLatest?: number // average each slice over the newest N rows
+        }
+        sections?: {
+            name?: string // shown next to the slice and in its tooltip
+            value?: number
+            color?: string // CSS colour; slices without one use the theme palette
+            pivot?: string // one doughnut per distinct value
+        }[][] // rows of slices; only the newest (last) row is drawn
+    }[]
 }
 ```
 
-## Interfaces
+Example (`src/default-data.json`, which is also the config a new dashboard tile starts with):
 
-```ts
-  interface DoughnutChartConfiguration {
-    settings: Settings
-    doughnutValue: number
-  }
-```
-```ts
-  interface Settings {
-    title: string,
-    subTitle: string,
-    minDoughnut: number,
-    maxDoughnut: number,
-    style: Style
-  }
-```
-```ts
-  interface Style {
-    needleColor: string,
-    sections: number,
-    backgroundColor: string[]
-  }
+```json
+{
+    "dataseries": [
+        {
+            "label": "Device States",
+            "sections": [
+                [
+                    { "name": "Devices Online", "value": 36 },
+                    { "name": "Devices Offline", "value": 13 },
+                    { "name": "Devices Unknown", "value": 4 }
+                ]
+            ]
+        }
+    ]
+}
 ```
 
-## Style options
-The following options are available for styling the doughnut graph.
-The `sections` option splits the doughnut area into by default three same sized sections. Therefore three different colors can be provided to the `backgroundColor` by default.
-```
-  interface Style {
-    needleColor: string,
-    sections: number,
-    backgroundColor: string[]
-  }
-```
+- `sections` is a list of rows, and each row is a list of slices. On a dashboard it is usually bound to a table: each row of the result is one whole doughnut, and the newest row is drawn. With `settings.averageLatest: N`, each slice is the mean of that slice over the newest N rows.
+- `pivot`: bind the same column on every slice to get one doughnut per distinct value, titled `<pivot value> - <label>`.
+- When every slice is 0 or missing, the doughnut shows an empty grey ring.
 
-## Linting and formatting
+## Theming
 
-To scan the project for linting and formatting errors, run
+- `theme`: `{ theme_name, theme_object }`, an ECharts theme that the widget registers under `theme_name`. Without a name (or with `'---'`), ECharts' built-in `light` theme is used.
+- `--re-text-color`: when this CSS custom property is set on the widget or an ancestor, it colours all text (the header, the doughnut titles and the slice labels) instead of the theme's title colour.
 
-```bash
-npm run lint
-```
+The widget paints no background of its own, so the host's tile shows through.
 
-To automatically fix linting and formatting errors, run
+## Development
 
-```bash
-npm run format
-```
-
-
-## Tooling configs
-
-For most of the tools, the configuration is in the `package.json` to reduce the amount of files in your project.
-
-If you customize the configuration a lot, you can consider moving them to individual files.
-
-## Local Demo with `web-dev-server`
-
-```bash
-npm start
-```
-
-To run a local development server that serves the basic demo located in `demo/index.html`
+| Command | What it does |
+| --- | --- |
+| `npm start` | Dev server on port 8000 with the demo in `demo/index.html`, plus a watch build |
+| `npm run build` | Library build to `dist/widget-doughnut.js` |
+| `npm run types` | Regenerate `src/definition-schema.d.ts` after editing `src/definition-schema.json` |
+| `npm run release` | Bump the patch version, build, tag and push; CI publishes to npm |
