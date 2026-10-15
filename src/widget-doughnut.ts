@@ -49,6 +49,14 @@ const DEFAULT_ECHARTS_COLORS = [
     '#9a60b4',
     '#ea7ccc'
 ]
+// Tooltip numbers: averaging (settings.averageLatest) produces means like
+// 41.333333333333336, so show at most two decimals. Only the display is rounded;
+// the slice angles use the exact value.
+const formatTooltipValue = (value: unknown): string =>
+    typeof value === 'number' && Number.isFinite(value)
+        ? value.toLocaleString(undefined, { maximumFractionDigits: 2 })
+        : String(value ?? '-')
+
 @customElement('widget-doughnut-versionplaceholder')
 export class WidgetDoughnut extends LitElement {
     @property({ type: Object })
@@ -306,6 +314,7 @@ export class WidgetDoughnut extends LitElement {
                     .filter((row) => row.length)
                 const data2 = data.map((row) =>
                     row.map((s) => {
+                        if (s == null || (s.name == null && s.value == null)) return null
                         const color = s?.color
                         if (color === '' || color == null) {
                             return { name: s?.name, value: s?.value }
@@ -316,7 +325,8 @@ export class WidgetDoughnut extends LitElement {
 
                 const pds: any = {
                     label: name,
-                    cutout: ds.cutout,
+                    // every chart pivoted out of this dataseries uses its settings
+                    settings: ds.settings,
                     sections: data2
                 }
                 const chart = this.setupChart(name)
@@ -329,24 +339,32 @@ export class WidgetDoughnut extends LitElement {
             dataSets.forEach((ds) => {
                 const data: any[] = []
                 ds.backgroundColor = ds.sections?.[0]?.map((d: any) => d?.itemStyle?.color) ?? []
-                ds.settings ??= {}
-                if (typeof ds.settings.averageLatest !== 'number' || isNaN(ds.settings.averageLatest)) {
-                    ds.settings.averageLatest = 1
-                }
-                const sections = ds?.sections?.slice(-ds.settings.averageLatest || -1) ?? []
+                // Average the newest `averageLatest` rows. Unset (a cleared field
+                // arrives as a missing key), NaN or anything below 1 uses only the
+                // latest row, without averaging; a fraction counts whole rows only.
+                const n = ds.settings?.averageLatest
+                const averageLatest = typeof n === 'number' && n >= 1 ? Math.floor(n) : 1
+                const sections = ds?.sections?.slice(-averageLatest) ?? []
                 const newSection = window.structuredClone(sections.slice(-1)[0]) ?? []
-                const values = sections?.map((d) => d.length) ?? []
-                const numSections = Math.max(...values)
-                for (let i = 0; i < numSections; i++) {
-                    // rows can be ragged — the cloned latest row may have
-                    // fewer slices than the longest row in the window
+                // The slices are those of the latest row; older rows can be
+                // longer or shorter (ragged). An empty slot in the latest row is null
+                // (see data2) and stays a hole, so ECharts draws nothing for it.
+                for (let i = 0; i < newSection.length; i++) {
                     if (!newSection[i]) continue
-                    // array from i-th sections values
-                    const valueCol =
-                        sections?.map((row) => row?.[i]?.value).filter((v) => v !== undefined) ?? []
+                    // the i-th slice's numbers across the window. Missing, null,
+                    // blank and non-numeric values are left out of the mean, not
+                    // counted as 0. A slice with no value at all shows 0; one with
+                    // only non-numeric text is NaN, which ECharts leaves undrawn.
+                    const present = sections
+                        .map((row) => row?.[i]?.value)
+                        .filter((v) => v != null && String(v).trim() !== '')
+                    const valueCol = present.map(Number).filter(Number.isFinite)
 
-                    newSection[i].value =
-                        valueCol.reduce((p, c) => (p ?? 0) + (c ?? 0), 0) ?? 0 / valueCol.length
+                    newSection[i].value = valueCol.length
+                        ? valueCol.reduce((p, c) => p + c, 0) / valueCol.length
+                        : present.length
+                          ? NaN
+                          : 0
                 }
                 ds.sections = [newSection]
 
@@ -393,6 +411,7 @@ export class WidgetDoughnut extends LitElement {
                 // components we never register — the template only names components
                 // registered in echarts.use above.
                 const option: any = window.structuredClone(this.template)
+                option.tooltip.valueFormatter = formatTooltipValue
 
                 const series = option.series[0],
                     series2 = option.series[1]
@@ -414,16 +433,21 @@ export class WidgetDoughnut extends LitElement {
                 } else {
                     // Some slices have explicit colors: fill in missing ones from palette
                     sliceData.forEach((d, idx) => {
-                        if (!d?.itemStyle?.color) {
+                        if (d && !d.itemStyle?.color) {
                             d.itemStyle = d.itemStyle ?? {}
                             d.itemStyle.color = palette[idx % palette.length]
                         }
                     })
                 }
 
-                series.radius[0] = String(parseFloat(ds.settings?.cutout ?? '50%') * 0.6) + '%'
+                // settings.cutout is the hole in percent of the outer radius (60%),
+                // clamped to 0–90 so a ring is always left: '0%' is a pie. Unset, blank
+                // (how a cleared field arrives) or not a number keeps the 50% default.
+                const cutout = parseFloat(ds.settings?.cutout ?? '')
+                const hole = Number.isFinite(cutout) ? Math.min(Math.max(cutout, 0), 90) : 50
+                series.radius[0] = String(hole * 0.6) + '%'
                 series.itemStyle.borderRadius = 5 * modifier
-                series2.radius[0] = String(parseFloat(ds.settings?.cutout ?? '50%') * 0.6) + '%'
+                series2.radius[0] = String(hole * 0.6) + '%'
                 series2.itemStyle.borderRadius = 5 * modifier
                 // Sections
                 // series.data[0].name = ds.unit
@@ -432,7 +456,14 @@ export class WidgetDoughnut extends LitElement {
 
                 // Labels
                 series.label.fontSize = 11 * modifier // outside text labels
-                series2.label.fontSize = 10 * modifier // inside percentage labels
+                // Inside percentage labels fit the ring band: the chart is 200 * modifier
+                // tall and the outer radius is 60% of its half, so the band is
+                // 0.6 * modifier * (100 - hole) px. At the default 50% hole that leaves
+                // the 10 * modifier size unchanged; a thinner ring gets smaller labels,
+                // and none once the band is too thin to hold them (a hole above 75%).
+                const band = 0.6 * modifier * (100 - hole)
+                series2.label.fontSize = Math.min(10 * modifier, 0.4 * band)
+                series2.label.show = hole <= 75
 
                 // Apply
                 chartM.echart?.setOption(option)
