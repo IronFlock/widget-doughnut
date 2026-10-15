@@ -71,7 +71,6 @@ export class WidgetDoughnut extends LitElement {
     @query('.doughnut-container', true)
     private chartContainer?: HTMLDivElement
 
-    @state() private themeBgColor?: string
     @state() private themeTitleColor?: string
     @state() private themeSubtitleColor?: string
 
@@ -205,7 +204,6 @@ export class WidgetDoughnut extends LitElement {
     }
 
     registerTheme(theme?: Theme) {
-        this.themeBgColor = `var(--re-tile-background-color, ${this.theme?.theme_object?.backgroundColor || 'transparent'})`
         this.themeTitleColor = `var(--re-text-color, ${this.theme?.theme_object?.title?.textStyle?.color || 'inherit'})`
         this.themeSubtitleColor = `var(--re-text-color, ${this.theme?.theme_object?.title?.subtextStyle?.color || this.theme?.theme_object?.title?.textStyle?.color || 'inherit'})`
 
@@ -577,10 +575,7 @@ export class WidgetDoughnut extends LitElement {
 
     render() {
         return html`
-            <div
-                class="wrapper"
-                style="background-color: ${this.themeBgColor}; color: ${this.themeTitleColor}"
-            >
+            <div class="wrapper" style="color: ${this.themeTitleColor}">
                 <header>
                     <h3 class="paging" ?active=${this.inputData?.title}>${this.inputData?.title}</h3>
                     <p
