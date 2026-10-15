@@ -27,9 +27,14 @@ echarts.use([
 
 // echarts.use([GaugeChart, CanvasRenderer]);
 type Dataseries = Exclude<DoughnutChartConfiguration['dataseries'], undefined>[number]
+type Slice = { name?: unknown; value?: any; itemStyle?: { color?: unknown } } | null
+// What one doughnut draws: its title, the settings of the dataseries it came from, and
+// its rows of slices (after transformData, just the newest or averaged row).
+type ChartData = { title: string; settings?: Dataseries['settings']; sections: Slice[][] }
 type ChartCombination = {
+    title: string
     echart?: echarts.ECharts
-    dataSets: Dataseries[]
+    data?: ChartData
     element?: HTMLDivElement
     doomed?: boolean
 }
@@ -57,6 +62,29 @@ const formatTooltipValue = (value: unknown): string =>
         ? value.toLocaleString(undefined, { maximumFractionDigits: 2 })
         : String(value ?? '-')
 
+// The pivot of a row: the first slice pivot that is set. The whole row goes to that
+// value's doughnut, so a slice without its own pivot binding stays with its row, and a
+// row with no pivot at all (a NULL column) goes to the label's unsplit doughnut ('').
+const rowPivot = (row: any[]): unknown => {
+    for (const slice of row) {
+        const pivot = slice?.pivot
+        if (pivot != null && String(pivot) !== '') return pivot
+    }
+    return ''
+}
+
+// The identity of a pivot value. Typed, so 1 and '1' do not share a doughnut.
+const pivotKey = (pivot: unknown): string => (pivot === '' ? '' : `${typeof pivot}:${String(pivot)}`)
+
+// Pivot values in natural order (2 before 10), the unsplit '' group first.
+const comparePivots = (a: unknown, b: unknown): number => {
+    if (a === '' || b === '') return a === b ? 0 : a === '' ? -1 : 1
+    return (
+        String(a).localeCompare(String(b), undefined, { numeric: true }) ||
+        pivotKey(a).localeCompare(pivotKey(b))
+    )
+}
+
 @customElement('widget-doughnut-versionplaceholder')
 export class WidgetDoughnut extends LitElement {
     @property({ type: Object })
@@ -65,6 +93,7 @@ export class WidgetDoughnut extends LitElement {
     @property({ type: Object })
     theme?: Theme
 
+    // Keyed by dataseries index and pivot value, in display order (see transformData).
     @state()
     private canvasList: Map<string, ChartCombination> = new Map()
 
@@ -75,6 +104,9 @@ export class WidgetDoughnut extends LitElement {
     @state() private themeSubtitleColor?: string
 
     private resizeObserver: ResizeObserver
+    private dprQuery?: MediaQueryList
+    // inputData or theme changed while detached, so the charts are not up to date
+    private chartsStale = false
     boxes?: HTMLDivElement[]
     origWidth: number = 320
     origHeight: number = 200
@@ -88,18 +120,14 @@ export class WidgetDoughnut extends LitElement {
             this.adjustSizes()
             this.applyData()
         })
-        this.resizeObserver.observe(this)
 
         this.template = {
             // ECharts paints the registered theme's own canvas `backgroundColor`
-            // (chalk = `rgba(41,52,65,1)`) as an opaque slab over the wrapper's
-            // background, so the tile shows the theme colour behind the chart and
-            // the host's `--re-tile-background-color` everywhere else. Keeping the
-            // canvas transparent lets the wrapper show through; it already falls
-            // back to the theme's colour when nothing overrides it, so no theme
-            // loses its background. Set here rather than filtered out of
-            // registerTheme() — theme registration is global by name, so another
-            // widget on the page can re-register the same theme with it.
+            // (chalk = `rgba(41,52,65,1)`) as an opaque slab over the tile's
+            // background. Keeping the canvas transparent lets the tile show
+            // through. Set here rather than filtered out of registerTheme() —
+            // theme registration is global by name, so another widget on the page
+            // can re-register the same theme with it.
             backgroundColor: 'transparent',
             title: [
                 {
@@ -120,7 +148,9 @@ export class WidgetDoughnut extends LitElement {
             //   }
             // },
             tooltip: {
-                show: true
+                show: true,
+                // keep it inside the chart: .doughnut-container clips what overflows
+                confine: true
             },
             series: [
                 {
@@ -128,14 +158,10 @@ export class WidgetDoughnut extends LitElement {
                     radius: ['20%', '60%'],
                     center: ['50%', '50%'],
                     avoidLabelOverlap: true,
+                    // a zero slice has no angle, so it gets no label either
+                    minShowLabelAngle: 1,
                     itemStyle: {
                         borderRadius: 5
-                    },
-                    label2: {
-                        // formatter: (d: any) => d.value?.toFixed(),
-                        //position: 'inside'
-                        fontSize: 12,
-                        alignTo: 'none'
                     },
                     label: {
                         show: true,
@@ -154,6 +180,7 @@ export class WidgetDoughnut extends LitElement {
                     avoidLabelOverlap: true,
                     radius: ['20%', '60%'],
                     center: ['50%', '50%'],
+                    minShowLabelAngle: 1,
                     itemStyle: {
                         borderRadius: 5
                     },
@@ -164,11 +191,26 @@ export class WidgetDoughnut extends LitElement {
         }
     }
 
+    connectedCallback() {
+        super.connectedCallback()
+        this.resizeObserver.observe(this)
+        this.watchDevicePixelRatio()
+        // Reattached after disconnectedCallback disposed the charts, or after a change
+        // that transformData skipped while detached: rebuild them.
+        if (this.hasUpdated && (this.chartsStale || !this.canvasList.size)) this.rebuildCharts()
+    }
+
     disconnectedCallback() {
         super.disconnectedCallback()
-        if (this.resizeObserver) {
-            this.resizeObserver.disconnect()
-        }
+        this.resizeObserver.disconnect()
+        this.dprQuery?.removeEventListener('change', this.onDevicePixelRatioChange)
+        // ECharts keeps every instance in a global registry until dispose(), and each
+        // one holds its canvases and, through its div, this whole element, so dispose
+        // the charts once the element is really gone. A DOM move (studio's keyed tile
+        // repeat) disconnects and reconnects within one task, so decide after it.
+        setTimeout(() => {
+            if (!this.isConnected) this.deleteCharts()
+        })
     }
 
     update(changedProperties: Map<string, any>) {
@@ -201,6 +243,45 @@ export class WidgetDoughnut extends LitElement {
         this.transformData()
         this.adjustSizes()
         this.applyData()
+    }
+
+    private rebuildCharts() {
+        this.chartsStale = false
+        this.deleteCharts()
+        this.transformData()
+        this.adjustSizes()
+        this.applyData()
+        this.requestUpdate()
+    }
+
+    // zrender keeps the device pixel ratio a chart was created with, so after a
+    // browser zoom or a move to a HiDPI screen the canvases would stay blurry.
+    // Rebuild the charts when the ratio changes, and watch for the next change.
+    private onDevicePixelRatioChange = () => {
+        this.watchDevicePixelRatio()
+        this.rebuildCharts()
+    }
+
+    private watchDevicePixelRatio() {
+        this.dprQuery?.removeEventListener('change', this.onDevicePixelRatioChange)
+        this.dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
+        this.dprQuery.addEventListener('change', this.onDevicePixelRatioChange)
+    }
+
+    /**
+     * The dashboard's text colour for what ECharts paints: the chart titles and the
+     * slice labels. A canvas cannot resolve the var() chain in themeTitleColor, so
+     * read --re-text-color here, at the point of use and uncached, falling back to
+     * the theme's title colour. A board style edit then reaches the next chart
+     * update, and a per-tile one arrives with widget-item's requestUpdate('theme').
+     * Setting it also fixes dark themes: with the canvas transparent, ECharts never
+     * detects dark mode and would draw the labels #333 with a white halo.
+     */
+    private resolvedTextColor(): string | undefined {
+        return (
+            getComputedStyle(this).getPropertyValue('--re-text-color').trim() ||
+            this.theme?.theme_object?.title?.textStyle?.color
+        )
     }
 
     registerTheme(theme?: Theme) {
@@ -245,28 +326,15 @@ export class WidgetDoughnut extends LitElement {
             if (c * m * width <= uwgap) fits.push({ c, r, m, size, width, height, userWidth, userHeight })
         }
 
-        const maxSize = fits.reduce((p, c) => (c.size < p ? p : c.size), 0)
-        const fit = fits.find((f) => f.size === maxSize)
+        // Vertical Layout stacks the doughnuts in one column; otherwise the grid that
+        // gives each doughnut the most area wins.
+        const candidates = this.inputData?.columnLayout === true ? fits.filter((f) => f.c === 1) : fits
+        const maxSize = candidates.reduce((p, c) => (c.size < p ? p : c.size), 0)
+        const fit = candidates.find((f) => f.size === maxSize)
         if (!fit) return
         const modifier = fit.m ?? 0
 
         this.boxes = Array.from(this.chartContainer?.querySelectorAll('.chart') as NodeListOf<HTMLDivElement>)
-        // console.log(
-        //     'FITS count',
-        //     count,
-        //     userWidth,
-        //     userHeight,
-        //     'modifier',
-        //     modifier,
-        //     'cols',
-        //     fit?.c,
-        //     'rows',
-        //     fit?.r,
-        //     'new size',
-        //     fit?.size.toFixed(0),
-        //     'total space',
-        //     (userWidth * userHeight).toFixed(0)
-        // )
 
         this.chartContainer.style.gridTemplateColumns = `repeat(${fit.c}, 1fr)`
 
@@ -281,207 +349,250 @@ export class WidgetDoughnut extends LitElement {
         })
     }
 
-    async transformData() {
-        if (!this?.inputData?.dataseries?.length) return
-        // reset all existing chart dataseries
-        this.canvasList.forEach((chartM) => {
-            chartM.dataSets = []
-            chartM.doomed = true
+    transformData() {
+        // Until the first render there is no container to draw into; firstUpdated runs this again.
+        if (!this.chartContainer) return
+        // Detached: make no charts. disconnectedCallback disposes the others, so new
+        // ones would leak if the element never comes back; connectedCallback rebuilds
+        // from the current inputData and theme if it does.
+        if (!this.isConnected) {
+            this.chartsStale = true
+            return
+        }
+
+        // Every chart is doomed until this pass claims it again.
+        this.canvasList.forEach((chart) => {
+            chart.data = undefined
+            chart.doomed = true
         })
-        this.inputData.dataseries.forEach((ds) => {
-            ds.label = ds.label ?? ''
+
+        // A missing or emptied list still runs the passes below, so the old charts are
+        // disposed and No Data shows instead of the last values.
+        const list = this.inputData?.dataseries
+        const dataseries: any[] = Array.isArray(list) ? list : []
+        const order: string[] = []
+        dataseries.forEach((ds, dsIndex) => {
+            // A null list slot (studio keeps them; a stray '-' in a board template makes one).
+            if (!ds || typeof ds !== 'object') return
+            const label = ds.label == null ? '' : String(ds.label)
 
             // sections must be rows × slices, but malformed stored configs
             // (e.g. an object-shaped tableRef.format) deliver bare slice
             // objects in the outer array. Fold those into one extra row so
-            // the data still renders instead of throwing on row.filter below.
+            // the data still renders instead of throwing below.
             const sections: any[] = Array.isArray(ds.sections) ? ds.sections : []
             const rows: any[][] = sections.filter(Array.isArray)
             const looseSlices = sections.filter((s) => s && typeof s === 'object' && !Array.isArray(s))
             if (looseSlices.length) rows.push(looseSlices)
 
-            // pivot data
-            const distincts = [...new Set(rows.flat().map((d) => d?.pivot ?? ''))].sort()
-            // const derivedBgColors = tinycolor(ds.backgroundColors).monochromatic(distincts.length).map((c: any) => c.toHexString())
-            distincts.forEach((piv, i) => {
-                const prefix = piv ?? ''
-                const label = ds.label ?? ''
-                const name = prefix + (!!prefix && !!label ? ' - ' : '') + label
-                const data = rows
-                    .map((row) => (distincts.length === 1 ? row : row.filter((s) => s?.pivot === piv)))
-                    .filter((row) => row.length)
-                const data2 = data.map((row) =>
+            // One doughnut per pivot value, whole rows at a time.
+            const groups = new Map<string, { pivot: unknown; rows: any[][] }>()
+            for (const row of rows) {
+                const pivot = rowPivot(row)
+                const group = groups.get(pivotKey(pivot)) ?? { pivot, rows: [] }
+                group.rows.push(row)
+                groups.set(pivotKey(pivot), group)
+            }
+
+            for (const { pivot, rows: groupRows } of [...groups.values()].sort((a, b) =>
+                comparePivots(a.pivot, b.pivot)
+            )) {
+                const title = [pivot === '' ? '' : String(pivot), label].filter((s) => s !== '').join(' - ')
+                const sectionsOut: Slice[][] = groupRows.map((row) =>
                     row.map((s) => {
+                        // An empty slot stays null: a hole ECharts leaves out, not a nameless slice.
                         if (s == null || (s.name == null && s.value == null)) return null
-                        const color = s?.color
-                        if (color === '' || color == null) {
-                            return { name: s?.name, value: s?.value }
-                        }
-                        return { name: s?.name, value: s?.value, itemStyle: { color } }
+                        const color = s.color
+                        if (color === '' || color == null) return { name: s.name, value: s.value }
+                        return { name: s.name, value: s.value, itemStyle: { color } }
                     })
                 )
-
-                const pds: any = {
-                    label: name,
-                    // every chart pivoted out of this dataseries uses its settings
-                    settings: ds.settings,
-                    sections: data2
-                }
-                const chart = this.setupChart(name)
-                chart?.dataSets.push(pds)
-            })
+                // Keyed by entry and pivot, never by the title: two entries with the
+                // same or a blank label used to share one chart, and only the last was drawn.
+                const key = `${dsIndex}\u0000${pivotKey(pivot)}`
+                const chart = this.setupChart(key, title)
+                if (!chart) continue
+                // every chart pivoted out of this dataseries uses its settings
+                chart.data = { title, settings: ds.settings, sections: sectionsOut }
+                order.push(key)
+            }
         })
 
         // filter latest values and calculate average
-        this.canvasList.forEach(({ echart, dataSets }) => {
-            dataSets.forEach((ds) => {
-                const data: any[] = []
-                ds.backgroundColor = ds.sections?.[0]?.map((d: any) => d?.itemStyle?.color) ?? []
-                // Average the newest `averageLatest` rows. Unset (a cleared field
-                // arrives as a missing key), NaN or anything below 1 uses only the
-                // latest row, without averaging; a fraction counts whole rows only.
-                const n = ds.settings?.averageLatest
-                const averageLatest = typeof n === 'number' && n >= 1 ? Math.floor(n) : 1
-                const sections = ds?.sections?.slice(-averageLatest) ?? []
-                const newSection = window.structuredClone(sections.slice(-1)[0]) ?? []
-                // The slices are those of the latest row; older rows can be
-                // longer or shorter (ragged). An empty slot in the latest row is null
-                // (see data2) and stays a hole, so ECharts draws nothing for it.
-                for (let i = 0; i < newSection.length; i++) {
-                    if (!newSection[i]) continue
-                    // the i-th slice's numbers across the window. Missing, null,
-                    // blank and non-numeric values are left out of the mean, not
-                    // counted as 0. A slice with no value at all shows 0; one with
-                    // only non-numeric text is NaN, which ECharts leaves undrawn.
-                    const present = sections
-                        .map((row) => row?.[i]?.value)
-                        .filter((v) => v != null && String(v).trim() !== '')
-                    const valueCol = present.map(Number).filter(Number.isFinite)
+        this.canvasList.forEach(({ data: ds }) => {
+            if (!ds) return
+            // Average the newest `averageLatest` rows. Unset (a cleared field
+            // arrives as a missing key), NaN or anything below 1 uses only the
+            // latest row, without averaging; a fraction counts whole rows only.
+            const n = ds.settings?.averageLatest
+            const averageLatest = typeof n === 'number' && n >= 1 ? Math.floor(n) : 1
+            const sections = ds.sections.slice(-averageLatest)
+            const newSection: Slice[] = window.structuredClone(sections.slice(-1)[0]) ?? []
+            // The slices are those of the latest row; older rows can be
+            // longer or shorter (ragged). An empty slot in the latest row is null
+            // and stays a hole, so ECharts draws nothing for it.
+            for (let i = 0; i < newSection.length; i++) {
+                const slice = newSection[i]
+                if (!slice) continue
+                // the i-th slice's numbers across the window. Missing, null,
+                // blank and non-numeric values are left out of the mean, not
+                // counted as 0. A slice with no value at all shows 0; one with
+                // only non-numeric text is NaN, which ECharts leaves undrawn.
+                const present = sections
+                    .map((row) => row?.[i]?.value)
+                    .filter((v) => v != null && String(v).trim() !== '')
+                const valueCol = present.map(Number).filter(Number.isFinite)
 
-                    newSection[i].value = valueCol.length
-                        ? valueCol.reduce((p, c) => p + c, 0) / valueCol.length
-                        : present.length
-                          ? NaN
-                          : 0
-                }
-                ds.sections = [newSection]
-
-                // If the user didn't provide any per-slice colors, rely on theme/default palette.
-                // (We intentionally do not force itemStyle colors here so ECharts theme palettes work.)
-
-                ds.datalabels = {
-                    color: '#FFF',
-                    formatter: (d: number) => d.toFixed()
-                }
-            })
+                slice.value = valueCol.length
+                    ? valueCol.reduce((p, c) => p + c, 0) / valueCol.length
+                    : present.length
+                      ? NaN
+                      : 0
+            }
+            ds.sections = [newSection]
         })
 
-        const doomedCharts: string[] = []
         // remove all doomed charts
-        this.canvasList.forEach((chart, label) => {
+        this.canvasList.forEach((chart, key) => {
             if (!chart.doomed) return
             chart.echart?.dispose()
             chart.element?.remove()
-            doomedCharts.push(label)
+            this.canvasList.delete(key)
         })
 
-        doomedCharts.forEach((label) => this.canvasList.delete(label))
+        // Keep the grid in configuration order (entries, then sorted pivot values). A
+        // chart that appears later, or drops out for one update and comes back, would
+        // otherwise be appended at the end. Moving a div keeps its ECharts instance.
+        const ordered = order.flatMap((key) => {
+            const chart = this.canvasList.get(key)
+            return chart ? [[key, chart] as const] : []
+        })
+        this.canvasList.clear()
+        for (const [key, chart] of ordered) {
+            this.canvasList.set(key, chart)
+            if (chart.element) this.chartContainer.appendChild(chart.element)
+        }
     }
 
-    async applyData() {
+    applyData() {
         const modifier = this.modifier
 
         const palette =
             (Array.isArray(this.theme?.theme_object?.color) && this.theme?.theme_object?.color?.length
                 ? this.theme?.theme_object?.color
                 : DEFAULT_ECHARTS_COLORS) ?? DEFAULT_ECHARTS_COLORS
+        const textColor = this.resolvedTextColor()
 
-        this.canvasList.forEach((chartM, label) => {
-            for (const ds of chartM.dataSets) {
-                // Always build the option from the template — never from getOption().
-                // Reading the rendered option back and handing it to setOption
-                // deep-clones the whole stored option on every frame, and it returns
-                // every component normalized to an array, so any future
-                // `{ ...option.x }` here would spread an array into `{ '0': x }` and
-                // ECharts would merge that back one level deeper each update until
-                // zrender's recursive merge() overflowed the stack. Starting from the
-                // template also drops the need to strip theme-merged defaults for
-                // components we never register — the template only names components
-                // registered in echarts.use above.
-                const option: any = window.structuredClone(this.template)
-                option.tooltip.valueFormatter = formatTooltipValue
+        this.canvasList.forEach((chartM) => {
+            const ds = chartM.data
+            if (!ds || !chartM.echart) return
+            // Always build the option from the template — never from getOption().
+            // Reading the rendered option back and handing it to setOption
+            // deep-clones the whole stored option on every frame, and it returns
+            // every component normalized to an array, so any future
+            // `{ ...option.x }` here would spread an array into `{ '0': x }` and
+            // ECharts would merge that back one level deeper each update until
+            // zrender's recursive merge() overflowed the stack. Starting from the
+            // template also drops the need to strip theme-merged defaults for
+            // components we never register — the template only names components
+            // registered in echarts.use above.
+            const option: any = window.structuredClone(this.template)
+            option.tooltip.valueFormatter = formatTooltipValue
 
-                const series = option.series[0],
-                    series2 = option.series[1]
+            const series = option.series[0],
+                series2 = option.series[1]
 
-                // Title
-                option.title[0].text = ds.label
-                option.title[0].top = 0 * modifier
-                option.title[0].textStyle.fontSize = 14 * modifier
+            // Title: no smaller than 10px, cut to the chart's width instead of off at
+            // both canvas edges, in the dashboard's text colour.
+            const title = option.title[0]
+            title.text = ds.title
+            title.top = 0
+            title.textStyle.fontSize = Math.max(10, 14 * modifier)
+            title.textStyle.width = this.origWidth * modifier * 0.94
+            title.textStyle.overflow = 'truncate'
+            if (textColor) title.textStyle.color = textColor
+            // Room under a title, so the label of a slice near 12 o'clock does not run into it.
+            const center = ds.title ? ['50%', '55%'] : ['50%', '50%']
+            series.center = center
+            series2.center = center
 
-                const sliceData: any[] = ds.sections?.[0] ?? []
-                // Check if ANY slice has an explicit color
-                const hasAnyExplicitColor = sliceData.some(
-                    (d) => d?.itemStyle?.color != null && d?.itemStyle?.color !== ''
-                )
+            const sliceData: any[] = ds.sections?.[0] ?? []
+            // Check if ANY slice has an explicit color
+            const hasAnyExplicitColor = sliceData.some(
+                (d) => d?.itemStyle?.color != null && d?.itemStyle?.color !== ''
+            )
 
-                if (!hasAnyExplicitColor) {
-                    // No user-provided colors: use theme or default palette
-                    option.color = palette
-                } else {
-                    // Some slices have explicit colors: fill in missing ones from palette
-                    sliceData.forEach((d, idx) => {
-                        if (d && !d.itemStyle?.color) {
-                            d.itemStyle = d.itemStyle ?? {}
-                            d.itemStyle.color = palette[idx % palette.length]
-                        }
-                    })
-                }
-
-                // settings.cutout is the hole in percent of the outer radius (60%),
-                // clamped to 0–90 so a ring is always left: '0%' is a pie. Unset, blank
-                // (how a cleared field arrives) or not a number keeps the 50% default.
-                const cutout = parseFloat(ds.settings?.cutout ?? '')
-                const hole = Number.isFinite(cutout) ? Math.min(Math.max(cutout, 0), 90) : 50
-                series.radius[0] = String(hole * 0.6) + '%'
-                series.itemStyle.borderRadius = 5 * modifier
-                series2.radius[0] = String(hole * 0.6) + '%'
-                series2.itemStyle.borderRadius = 5 * modifier
-                // Sections
-                // series.data[0].name = ds.unit
-                series.data = ds.sections?.[0]
-                series2.data = ds.sections?.[0]
-
-                // Labels
-                series.label.fontSize = 11 * modifier // outside text labels
-                // Inside percentage labels fit the ring band: the chart is 200 * modifier
-                // tall and the outer radius is 60% of its half, so the band is
-                // 0.6 * modifier * (100 - hole) px. At the default 50% hole that leaves
-                // the 10 * modifier size unchanged; a thinner ring gets smaller labels,
-                // and none once the band is too thin to hold them (a hole above 75%).
-                const band = 0.6 * modifier * (100 - hole)
-                series2.label.fontSize = Math.min(10 * modifier, 0.4 * band)
-                series2.label.show = hole <= 75
-
-                // Apply
-                chartM.echart?.setOption(option)
+            if (!hasAnyExplicitColor) {
+                // No user-provided colors: use theme or default palette
+                option.color = palette
+            } else {
+                // Some slices have explicit colors: fill in missing ones from palette
+                sliceData.forEach((d, idx) => {
+                    if (d && !d.itemStyle?.color) {
+                        d.itemStyle = d.itemStyle ?? {}
+                        d.itemStyle.color = palette[idx % palette.length]
+                    }
+                })
             }
+
+            // settings.cutout is the hole in percent of the outer radius (60%),
+            // clamped to 0–90 so a ring is always left: '0%' is a pie. Unset, blank
+            // (how a cleared field arrives) or not a number keeps the 50% default.
+            const cutout = parseFloat(String(ds.settings?.cutout ?? ''))
+            const hole = Number.isFinite(cutout) ? Math.min(Math.max(cutout, 0), 90) : 50
+            series.radius[0] = String(hole * 0.6) + '%'
+            series.itemStyle.borderRadius = 5 * modifier
+            series2.radius[0] = String(hole * 0.6) + '%'
+            series2.itemStyle.borderRadius = 5 * modifier
+
+            // A doughnut whose slices add up to nothing gets ECharts' empty grey ring:
+            // with a zero sum ECharts would split it evenly, which reads as equal shares.
+            const hasShare = sliceData.some((d) => d && Number.isFinite(d.value) && d.value > 0)
+            series.data = hasShare ? sliceData : []
+            series2.data = hasShare ? sliceData : []
+
+            // Outside labels: no smaller than 9px, and left out when the chart is too
+            // small to hold them; the percentages and the tooltip remain.
+            series.label.fontSize = Math.max(9, 11 * modifier)
+            series.label.show = series.labelLine.show = modifier >= 0.45
+            series.labelLine.length = Math.max(6, 10 * modifier)
+            series.labelLine.length2 = Math.max(3, 5 * modifier)
+            if (textColor) {
+                series.label.color = textColor
+                series.label.textBorderWidth = 0
+                series.labelLine.lineStyle = { color: textColor }
+            }
+
+            // Inside percentage labels fit the ring band: the chart is 200 * modifier
+            // tall and the outer radius is 60% of its half, so the band is
+            // 0.6 * modifier * (100 - hole) px. A label needs about 0.4 of it; the
+            // size is at least 7px, and the labels are left out when the band cannot
+            // hold even that, or above a 75% hole.
+            const band = 0.6 * modifier * (100 - hole)
+            const fit = 0.4 * band
+            series2.label.fontSize = Math.max(7, Math.min(10 * modifier, fit))
+            series2.label.show = hole <= 75 && fit >= 6
+
+            // Apply
+            chartM.echart.setOption(option)
         })
     }
 
     deleteCharts() {
-        this.canvasList.forEach((chart, label) => {
+        this.canvasList.forEach((chart, key) => {
             chart.echart?.dispose()
             chart.element?.remove()
-            this.canvasList.delete(label)
+            this.canvasList.delete(key)
         })
     }
 
-    setupChart(label: string) {
-        const existingChart = this.canvasList.get(label)
+    setupChart(key: string, title: string) {
+        const existingChart = this.canvasList.get(key)
 
         if (existingChart) {
             delete existingChart.doomed
+            existingChart.title = title
+            existingChart.element?.setAttribute('name', title)
             return existingChart
         }
 
@@ -490,19 +601,20 @@ export class WidgetDoughnut extends LitElement {
             return
         }
         const newContainer = document.createElement('div')
-        newContainer.setAttribute('name', label)
+        newContainer.setAttribute('name', title)
         newContainer.setAttribute('class', 'chart')
         this.chartContainer.appendChild(newContainer)
 
         const theme =
             this.theme?.theme_name === '---' || !this.theme?.theme_name ? 'light' : this.theme?.theme_name
-        const newChart = echarts.init(newContainer, theme)
-        const chart = {
+        // Pass the ratio explicitly: zrender's own is captured once, when the module loads.
+        const newChart = echarts.init(newContainer, theme, { devicePixelRatio: window.devicePixelRatio })
+        const chart: ChartCombination = {
+            title,
             echart: newChart,
-            dataSets: [] as Dataseries[],
             element: newContainer
         }
-        this.canvasList.set(label, chart)
+        this.canvasList.set(key, chart)
         return chart
     }
 
@@ -535,22 +647,31 @@ export class WidgetDoughnut extends LitElement {
             overflow: hidden;
             position: relative;
             gap: 12px;
+            /* Each chart keeps a 320x200 box (adjustSizes), so centre the boxes in
+               their cells and the rows in the tile instead of leaving them in the
+               top left corner of a wide or tall tile. */
+            justify-items: center;
+            align-content: center;
         }
 
         header {
             display: flex;
             flex-direction: column;
         }
+        /* no title and no subtitle: no header, and no gap for it */
+        header[hidden] {
+            display: none;
+        }
         h3 {
             margin: 0;
-            max-width: 300px;
+            max-width: 100%;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
         }
         p {
             margin: 10px 0 0 0;
-            max-width: 300px;
+            max-width: 100%;
             font-size: 14px;
             line-height: 17px;
             overflow: hidden;
@@ -576,7 +697,7 @@ export class WidgetDoughnut extends LitElement {
     render() {
         return html`
             <div class="wrapper" style="color: ${this.themeTitleColor}">
-                <header>
+                <header ?hidden=${!this.inputData?.title && !this.inputData?.subTitle}>
                     <h3 class="paging" ?active=${this.inputData?.title}>${this.inputData?.title}</h3>
                     <p
                         class="paging"
