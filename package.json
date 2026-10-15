@@ -3,7 +3,7 @@
     "description": "REWidget widget-doughnut",
     "license": "MIT",
     "author": "widget-doughnut",
-    "version": "1.5.31",
+    "version": "1.5.32",
     "engines": {
         "node": ">=24.9.0",
         "npm": ">=10.0.2"
