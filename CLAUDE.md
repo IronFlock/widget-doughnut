@@ -8,7 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `npm run build` — Production library build via Vite/Rollup. Outputs `dist/widget-doughnut.js` (ES module).
 - `npm run watch` — `vite build --watch` only (no dev server).
 - `npm run types` — Regenerate `src/definition-schema.d.ts` from `src/definition-schema.json` using `json2ts`. Run this after editing the JSON schema.
-- `npm run release` — `npm version patch`: preflight guards (on `main`, clean tree, not behind `origin/main`, generated files current, build passes), then the bump and a `dist/` rebuild (the `version` hook, so the local build registers the new tag), then commit, bare-semver tag, `git push --follow-tags`, then waits on the CI run and fails if the npm publish fails. `npm run release:minor` / `release:major` for other bumps.
+- `just lint` — what the CI gate checks besides the build: regenerating the committed generated files (`npm run types`) changes nothing. `just build` = `npm run build`.
+- `just merge` / `just release-patch` (`release-minor`, `release-major`) — pull requests into `main` from a feature branch with everything committed: a no-release one, or a release one whose merge publishes to npm in CI (`.github/workflows/build-publish.yml`), then the release GitHub App tags the bare version and creates the GitHub release. Never `npm publish`, tag or edit the version by hand.
 - `npm run link` / `npm run unlink` — Build and `npm link` this package into the studio checkout at `../../studio` (the host app, `~/git/ironflock/studio`), or put the published package back there. Only studio's appliance build (`build:appliance`) reads the widget from `node_modules`: its dev server (`npm run dev`) already aliases `widget-doughnut` to this checkout's `dist/` and serves its `src/*.json`, so `npm run watch` here is enough for dev. Studio tracks both `package-lock.json` and `bun.lock` (its Dockerfile runs `bun install --frozen-lockfile`), and `unlink` reinstalls with npm only: run `bun install` in studio as well if that moved the version.
 
 No test runner or lint script is wired up (there is no `npm run lint` or `npm run format`). ESLint/Prettier configs are present (`.prettierrc`, eslint deps) but invocation is manual.
@@ -48,7 +49,7 @@ This repo publishes `@ironflock/widget-doughnut`, a single Lit web component con
 
 ### Release flow
 
-Tags pushed to GitHub trigger `.github/workflows/build-publish.yml` which runs `npm ci`, `npm run build`, then `npm publish --access public` via npm trusted publishing (OIDC — no `NPM_TOKEN`) and creates a GitHub Release. `npm run release` is the canonical local command. The bare-semver tag (e.g. `1.5.19`, not `v1.5.19`) comes from `tag-version-prefix=""` in `.npmrc`, so every `npm version` invocation gets it, not just the release script.
+Release on merge, through the shared IronFlock harness (IronFlock/workflows): `main` takes pull requests only, with green `ci-ok` and `security / report`. `just release-patch` bumps `package.json` and the lockfile and opens the release pull request `release widget-doughnut <version>`; its merge runs `.github/workflows/build-publish.yml` (the name stays because npm's trusted publisher names it): `npm ci`, build, `npm publish` via npm trusted publishing (OIDC, no `NPM_TOKEN`), then the release GitHub App sets the bare-version tag (`1.0.10`, no `v`) and creates the GitHub Release. `just merge` opens a pull request that releases nothing.
 
 ## `aiSelection` in `src/definition-schema.json`
 
