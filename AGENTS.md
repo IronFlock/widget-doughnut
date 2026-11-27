@@ -77,7 +77,7 @@ This repo publishes `@ironflock/widget-doughnut`, a single Lit web component con
 
 `vite.config.ts` configures a library build:
 - Single ES-module output (`dist/widget-doughnut.js`) with sourcemaps and a license banner.
-- `echarts` (and any subpath) is externalized.
+- `echarts` and `lit` (and any subpath of either) are externalized: studio's import map provides one copy of each for all widgets. `lit` stays in `dependencies`, because the package's types import it.
 - `@rollup/plugin-replace` substitutes `versionplaceholder` → current `package.json` version (affects the custom element tag name and the `version` class field).
 - `process.env.NODE_ENV` is hardcoded to `'production'`.
 
