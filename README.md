@@ -8,7 +8,7 @@ A [Lit](https://lit.dev) web component that draws doughnut and pie charts for Ir
 npm i @ironflock/widget-doughnut
 ```
 
-`echarts` (^6) is a peer dependency: the host app provides it.
+`echarts` (^6) is a peer dependency: the host app provides it. Lit is not in the bundle either: a bundler resolves it from `node_modules`, and a page that loads the widget from a CDN maps `lit` in its import map.
 
 ## Usage
 
